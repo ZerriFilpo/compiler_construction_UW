@@ -235,8 +235,42 @@ class Compiler:
     ############################################################################
 
     def prelude_and_conclusion(self, p: X86Program) -> X86Program:
-        # YOUR CODE HERE
-        pass        
+
+        prelude = [
+
+            Instr('pushq', [Reg('rbp')]),
+            Instr('movq', [Reg('rsp'), Reg('rbp')]),
+
+        ]
+
+        offset = 0
+
+        for i in p.body:
+
+            if isinstance(i, Instr):
+
+                for a in i.args:
+
+                    if isinstance(a, Deref):
+
+                        offset = max(offset, abs(a.offset)) 
+
+        while offset % 16 != 0:
+
+            offset += 8
+
+        prelude.append(Instr('subq', [Immediate(offset), Reg('rsp')]))
+
+        coclusion = [
+
+            Instr('movq', [Reg('rbp'), Reg('rsp')]),
+            Instr('movq', [Immediate(0), Reg('rax')]),
+            Instr('popq', [Reg('rbp')]),
+            Instr('retq', []),
+
+        ]
+
+        return X86Program(prelude + p.body + coclusion)
 
 
 
@@ -249,4 +283,5 @@ if __name__ == '__main__':
     x86 = c.select_instructions(prog)
     x86 = c.assign_homes(x86)
     x86 = c.patch_instructions(x86)
+    x86 = c.prelude_and_conclusion(x86)
     print(x86)
