@@ -91,9 +91,16 @@ class Compiler:
 
                     case BinOp(left=left, op=ast.Add(), right=right):
 
+                        #instrs.append(Instr('movq', [self.select_arg(left), Reg('rax')]))
+                        #instrs.append(Instr('addq', [self.select_arg(right), Reg('rax')]))
+                        
                         instrs.append(Instr('addq', [self.select_arg(right), self.select_arg(left),]))
 
                     case BinOp(left=left, op=ast.Sub(), right=right):
+
+                        #instrs.append(Instr('movq', [self.select_arg(left), Reg('rax')]))
+                        #instrs.append(Instr('subq', [self.select_arg(right), Reg('rax')]))
+
                         instrs.append(Instr('subq', [self.select_arg(right) ,self.select_arg(left)]))
 
                 instrs.append(Instr('movq', [Reg('rax'), Variable(var)]))
@@ -199,7 +206,7 @@ class Compiler:
 
             if i.instr == 'addq' or i.instr == 'subq':
 
-                if is_memory_arg(i.args[0]) and is_memory_arg(i.args[1]):
+                if not isinstance(i.args[1], Reg): #if is_memory_arg(i.args[0]) or is_memory_arg(i.args[1]):
 
                     instrs.append(Instr('movq', [i.args[1], Reg('rax')]))
                     instrs.append(Instr(i.instr, [i.args[0], Reg('rax')]))
