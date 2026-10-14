@@ -17,3 +17,9 @@ test_*
 
 # uv
 .venv/
+
+
+# tar
+
+*.tar.gz
+.tar
