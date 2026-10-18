@@ -43,7 +43,7 @@ class Compiler:
 
                 if need_atomic:
 
-                    t = Name(id=f'_tmp{self.count}')
+                    t = Name(id=f'%tmp{self.count}')
 
                     self.count += 1
 
@@ -59,7 +59,7 @@ class Compiler:
 
                 if need_atomic:
 
-                    t = Name(id=f'_tmp{self.count}')
+                    t = Name(id=f'%tmp{self.count}')
 
                     self.count += 1
 
@@ -69,6 +69,14 @@ class Compiler:
 
             case Call(func=Name(id='input_int'), args=[]):
 
+                if need_atomic:
+
+                    t = Name(id=f'%tmp{self.count}')
+
+                    self.count += 1
+
+                    return (t, [(t, e)])
+
                 return (e, [])
 
             case _:
@@ -77,14 +85,34 @@ class Compiler:
                     
             
     def rco_stmt(self, s: stmt) -> list[stmt]:
-        
+
+        stmts = []
+
         match s:       
 
             case Assign(targets=[Name(id=var)], value=arg):
 
-                
+                e, temp = self.rco_exp(arg, False)
 
+                for t, exp in temp:
 
+                    stmts.append(Assign(targets=[t], value=exp))
+
+                stmts.append(Assign(targets=[Name(id=var)], value=e))
+
+                return stmts 
+
+            case Expr(value=Call(func=Name(id='print'), args=[arg])):
+
+                e, temp = self.rco_exp(arg, True)
+
+                for t, exp in temp:
+
+                    stmts.append(Assign(targets=[t], value=exp))
+
+                stmts.append(Expr(value=Call(func=Name(id='print'), args=[e])))
+
+                return stmts
 
             case _:
 
@@ -242,11 +270,7 @@ class Compiler:
                     new_args.append(self.assign_homes_arg(a, home))
 
                 return Instr(instr, new_args)
-
-            case Callq(label=label, nargs=nargs):
-
-                return Callq(label, nargs)
-
+            
             case _:
                 return i
         
@@ -294,6 +318,21 @@ class Compiler:
         if isinstance(i, Instr):
 
             if i.instr == 'addq' or i.instr == 'subq' or i.instr == 'imulq':
+
+                if isinstance(i.args[0], Immediate) and not(-2**31 <= i.args[0].value < 2**31 ):
+
+                    if not isinstance(i.args[1], Reg): #if is_memory_arg(i.args[0]) or is_memory_arg(i.args[1]):
+                    
+                        instrs.append(Instr('movq', [i.args[1], Reg('rax')]))
+                        instrs.append(Instr('movq', [i.args[0], Reg('rcx')]))
+                        instrs.append(Instr(i.instr, [Reg('rcx'), Reg('rax')]))
+
+                        return instrs
+
+                    instrs.append(Instr('movq', [i.args[0], Reg('rcx')]))
+                    instrs.append(Instr(i.instr, [Reg('rcx'), i.args[1]]))
+                    
+                    return instrs
 
                 if not isinstance(i.args[1], Reg): #if is_memory_arg(i.args[0]) or is_memory_arg(i.args[1]):
 
@@ -385,6 +424,7 @@ if __name__ == '__main__':
         prog = ast.parse(f.read())
     
     c = Compiler()
+    prog = c.remove_complex_operands(prog)
     x86 = c.select_instructions(prog)
     x86 = c.assign_homes(x86)
     x86 = c.patch_instructions(x86)
