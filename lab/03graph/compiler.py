@@ -235,7 +235,6 @@ class Compiler:
                             # subq b, a => a = a - b
                             # negq a => -a = -(a - b) = b - a
 
-
                         else:
 
                             instrs.append(Instr('movq', [self.select_arg(left), var]))
@@ -254,6 +253,18 @@ class Compiler:
 
                             instrs.append(Instr('imulq', [self.select_arg(left), self.select_arg(right)]))
 
+                        elif isinstance(self.select_arg(right), Immediate) and isinstance(self.select_arg(left), Variable):
+                        
+                            instrs.append(Instr('imulq', [self.select_arg(right), self.select_arg(left), var]))
+
+                            return instrs
+                        
+                        elif isinstance(self.select_arg(left), Immediate) and isinstance(self.select_arg(right), Variable):
+                        
+                            instrs.append(Instr('imulq', [self.select_arg(left), self.select_arg(right), var]))
+
+                            return instrs
+
                         else:
 
                             instrs.append(Instr('movq', [self.select_arg(left), var]))
@@ -263,12 +274,32 @@ class Compiler:
 
                     case BinOp(left=left, op=ast.FloorDiv(), right=right):
 
-                        
+                        if isinstance(self.select_arg(right), Immediate):
+
+                            temp = Variable(f'%tmp{self.count}')
+                            self.count += 1
+
+                            instrs.append(Instr('movq', [self.select_arg(right), temp]))
+                            instrs.append(Instr('idivq', [self.select_arg(left), temp, Variable(var)]))
+
+                            return instrs
+
                         instrs.append(Instr('idivq', [self.select_arg(left), self.select_arg(right), Variable(var)]))
 
 
                     case BinOp(left=left, op=ast.Mod(), right=right):
 
+                        if isinstance(self.select_arg(right), Immediate):
+                        
+                            temp = Variable(f'%tmp{self.count}')
+                            self.count += 1
+
+                            instrs.append(Instr('movq', [self.select_arg(right), temp]))
+                            instrs.append(Instr('idivq', [self.select_arg(left), temp]))
+                            instrs.append(Instr('movq', [Reg('rdx'), Variable(var)]))
+
+                            return instrs
+                        
                         instrs.append(Instr('idivq', [self.select_arg(left), self.select_arg(right)]))
                         instrs.append(Instr('movq', [Reg('rdx'), Variable(var)]))
 
@@ -287,11 +318,124 @@ class Compiler:
 
     def uncover_live(self, p: X86Program) -> X86Program:
 
-        pass
+        live = set()
 
-  
+        self.live_after = {}
+
+        size = len(p.body) - 1
+
+        for i in reversed(p.body):
+
+            W = set()
+            R = set()
+
+            if isinstance(i, Callq):
+
+                R |= set([Reg('rdi'), Reg('rsi'), Reg('rdx'), Reg('rcx'), Reg('r8'), Reg('r9')][:i.num_args])
+                W |= {Reg('rax'), Reg('rcx'), Reg('rdx'), Reg('rsi'), Reg('rdi'), Reg('r8'), Reg('r9'), Reg('r10'), Reg('r11')}
+
+            if isinstance(i, Instr):
+
+                if i.instr == 'idivq':
+
+                    if isinstance(i.args[1], Variable) or isinstance(i.args[1], Reg):
+                                                        
+                        R.add(i.args[1])
+
+                    if isinstance(i.args[0], Variable) or isinstance(i.args[0], Reg):
+
+                        R.add(i.args[0])
+
+                    if len(i.args) == 3:
+
+                        if isinstance(i.args[2], Variable) or isinstance(i.args[2], Reg):
+
+                            W.add(i.args[2])
+
+                    W.add(Reg('rax'))
+                    W.add(Reg('rdx'))
+
+                elif len(i.args) == 1:
+
+                    d = i.args[0]
+
+                    if isinstance(d, Variable) or isinstance(d, Reg):
+
+                        if i.instr == 'negq':
+
+                            R.add(d)
+                            W.add(d)          
+
+                if len(i.args) == 2:
+
+                    s = i.args[0]
+                    d = i.args[1]
+
+                    if i.instr == 'movq':
+                    
+                        if isinstance(s, Variable) or isinstance(s, Reg):
+    
+                            R.add(s)
+    
+                        if isinstance(d, Variable) or isinstance(d, Reg):
+    
+                            W.add(d)
 
 
+                    if i.instr == 'addq':
+                    
+                        if isinstance(s, Variable) or isinstance(s, Reg):
+
+                            R.add(s)
+
+                        if isinstance(d, Variable) or isinstance(d, Reg):
+
+                            R.add(d)
+                            W.add(d)
+
+                    if i.instr == 'subq':
+                    
+                        if isinstance(s, Variable) or isinstance(s, Reg):
+
+                            R.add(s)
+
+                        if isinstance(d, Variable) or isinstance(d, Reg):
+
+                            R.add(d)
+                            W.add(d)
+
+                    if i.instr == 'imulq':
+
+                        if isinstance(s, Variable) or isinstance(s, Reg):
+
+                            R.add(s)
+
+                        if isinstance(d, Variable) or isinstance(d, Reg): 
+
+                            R.add(d)
+                            W.add(d)
+
+                elif len(i.args) == 3:
+
+                    s = i.args[1]
+                    d = i.args[2]
+
+                    if i.instr == 'imulq':
+
+                        if isinstance(s, Variable) or isinstance(s, Reg):
+
+                            R.add(s)
+
+                        if isinstance(d, Variable) or isinstance(d, Reg):
+
+                            W.add(d)
+
+        self.live_after[size] = live
+        size -= 1
+
+        live = (live - W) | R
+        
+        return p
                     
 
     ############################################################################
@@ -329,7 +473,7 @@ class Compiler:
         
     def assign_homes(self, p: X86Program) -> X86Program:
 
-        varibles = set()
+        variables = []
 
         for instr in p.body:
 
@@ -339,12 +483,14 @@ class Compiler:
 
                     if isinstance(arg, Variable):
 
-                        varibles.add(arg)
+                        if arg not in variables:
+
+                            variables.append(arg)
 
         home = {}
         offset = -8
 
-        for var in varibles:
+        for var in variables:
 
             home[var] = Deref('rbp', offset)
             offset -= 8
@@ -390,6 +536,18 @@ class Compiler:
 
             if i.instr == 'addq' or i.instr == 'subq' or i.instr == 'imulq':
 
+                if i.instr == 'imulq' and len(i.args) == 3:
+                    
+                    if not isinstance(i.args[2], Reg) or (isinstance(i.args[0], Immediate) and not(-2**31 <= i.args[0].value < 2**31 )):
+
+                        instrs.append(Instr('movq', [i.args[0], Reg('rax')]))
+                        instrs.append(Instr(i.instr, [i.args[1], Reg('rax')]))
+                        instrs.append(Instr('movq', [Reg('rax'), i.args[2]]))
+
+                        return instrs
+
+                    return [i]
+
                 if not isinstance(i.args[1], Reg): #if is_memory_arg(i.args[0]) or is_memory_arg(i.args[1]):
                 
                     if i.instr == 'imulq':
@@ -416,14 +574,7 @@ class Compiler:
 
                 instrs.append(Instr('movq', [i.args[0], Reg('rax')]))
                 instrs.append(Instr('cqto', []))
-                
-                if isinstance(i.args[1], Immediate):
-
-                    instrs.append(Instr('movq', [i.args[1], Reg('rcx')]))
-                    instrs.append(Instr(i.instr, [Reg('rcx')]))
-
-                else:
-                    instrs.append(Instr('idivq', [i.args[1]]))
+                instrs.append(Instr('idivq', [i.args[1]]))
 
                 if len(i.args) == 3:
 
