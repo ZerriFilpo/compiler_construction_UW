@@ -1,0 +1,6 @@
+a = input_int()
+b = input_int()
+print(a)
+print(b)
+print(a + b)
+print(a * b)

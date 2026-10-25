@@ -455,6 +455,11 @@ class Compiler:
 
             instr = p.body[i]
 
+            if isinstance(instr, Instr) and instr.instr == 'idivq' and isinstance(instr.args[1], Variable):
+            
+                graph.add_edge(instr.args[1], Reg('rax'))
+                graph.add_edge(instr.args[1], Reg('rdx'))
+
             for d in W:
 
                 graph.add_vertex(d)
@@ -528,7 +533,7 @@ class Compiler:
 
         return color
 
-    def allocate_registers(self, p: X86Program) -> X86Program:
+    def allocate_registers(self, p: X86Program, flag: int) -> X86Program:
     
         variables = {}
 
@@ -545,26 +550,50 @@ class Compiler:
 
         inverted = {}
 
+        size = 11
+
+        if flag >= 0:
+
+            size = flag
+
         for r, i in regs.items():
 
             inverted[i] = r
+
+        contagem = {}
+
+        for instr in p.body:
+
+            if isinstance(instr, Instr):
+
+                for arg in instr.args:
+
+                    if isinstance(arg, Variable) and colors[arg] <= 10:
+
+                        c = colors[arg]
+                        contagem[c] = contagem.get(c, 0) + 1
+
+        ordenadas = sorted(contagem, key=lambda c: contagem[c], reverse=True)
+
+        kept = set(ordenadas[:size]) 
 
         self.used_callee = []
 
         for v, c in colors.items():
 
-            if isinstance(v, Variable) and 7 <= c <= 10:
+            if isinstance(v, Variable) and 7 <= c <= 10 and c in kept:
 
                 if inverted[c] not in self.used_callee:
 
                     self.used_callee.append(inverted[c])
+
 
         self.used_callee.sort()
 
         C = len(self.used_callee)
                 
         offset = -8 * (C + 1)
-            
+
         for instr in p.body:
 
             if isinstance(instr, Instr):
@@ -573,11 +602,11 @@ class Compiler:
 
                     if isinstance(arg, Variable):
 
-                        if arg not in home and 0 <= colors[arg] <= 10:
+                        if arg not in home and colors[arg] in kept:
 
                             home[arg] = Reg(inverted[colors[arg]])
 
-                        if arg not in home and colors[arg] > 10:
+                        if arg not in home and colors[arg] not in kept:
 
                             if colors[arg] not in var_colors:
 
@@ -844,12 +873,36 @@ if __name__ == '__main__':
     import sys
     with open(sys.argv[1]) as f:
         prog = ast.parse(f.read())
+
+    flag = -1
+
+    for i in range(len(sys.argv)):
+
+        if sys.argv[i] == '--registers':
+
+            flag = i 
+
+    if len(sys.argv) < flag + 2:
+
+        flag = -1
+
+    try:
+
+        flag = int(sys.argv[flag + 1])
+
+    except (ValueError, IndexError):
+
+        flag = -1
+
+    if flag > 11:
+
+        flag = -1
     
     c = Compiler()
     prog = c.remove_complex_operands(prog)
     x86 = c.select_instructions(prog)
     x86 = c.uncover_live(x86)
-    x86 = c.allocate_registers(x86)
+    x86 = c.allocate_registers(x86, flag)
     x86 = c.patch_instructions(x86)
     x86 = c.prelude_and_conclusion(x86)
     print(x86)

@@ -1,0 +1,9 @@
+n = input_int()
+q = n // 7
+r = n % 7
+print(q)
+print(r)
+t = q * 7 + r
+print(t)
+print(n - t)
+print(-n // 2)
