@@ -1,0 +1,10 @@
+x = input_int()
+y = input_int()
+if y != 0 if (x < 10 if x > 0 else False) else False:
+    print(1)
+elif not (True if x == 5 else y == 5):
+    print(2)
+else:
+    print(3)
+z = 1 if (True if x > 2 else y > 2) else 0
+print(z + (10 if not (y < 0 if x < 0 else False) else 20))
