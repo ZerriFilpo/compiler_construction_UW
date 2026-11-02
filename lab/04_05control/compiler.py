@@ -9,7 +9,7 @@ import ast
 from ast import (expr, stmt, Module, Name, Expr, Call, Assign, Constant, Compare, UnaryOp, BinOp, BoolOp, IfExp, If)
 from x86_ast import (X86Program, instr, arg, Variable, Instr, Callq, Reg, Immediate, Deref)
 from graph import UndirectedAdjList
-
+from cif import (Begin)
 
 Binding = tuple[Name, expr]
 Temporaries = list[Binding]
@@ -149,6 +149,23 @@ class Compiler:
 
                 return (e, [])
 
+            case Compare(left=left, ops=ops, comparators=comparators):
+
+                l, temp_l = self.rco_exp(left, True)
+                r, temp_r = self.rco_exp(comparators[0], True)
+
+                e = Compare(left=l, ops=ops, comparators=[r])
+
+                if need_atomic:
+
+                    t = Name(id=f'%tmp{self.count}')
+
+                    self.count += 1
+
+                    return (t, temp_l + temp_r + [(t, e)])
+
+                return (e, temp_l + temp_r)
+
             case BinOp(left=left, op=op, right=right):
 
                 l, temp_l = self.rco_exp(left, True)
@@ -167,10 +184,26 @@ class Compiler:
                 return (e, temp_l + temp_r)
 
             case UnaryOp(op=ast.USub(), operand=arg):
-                
+
                 ar, temp = self.rco_exp(arg, True)
-            
+                            
                 e = UnaryOp(op=ast.USub(), operand=ar)
+
+                if need_atomic:
+
+                    t = Name(id=f'%tmp{self.count}')
+
+                    self.count += 1
+
+                    return (t, temp + [(t, e)])
+
+                return (e, temp)
+
+            case UnaryOp(op=ast.Not(), operand=arg):
+
+                ar, temp = self.rco_exp(arg, not isinstance(arg, Compare))
+            
+                e = UnaryOp(op=ast.Not(), operand=ar)
 
                 if need_atomic:
 
@@ -194,6 +227,48 @@ class Compiler:
 
                 return (e, [])
 
+            case IfExp(test=test, body=body, orelse=orelse):
+            
+                t, temp_t = self.rco_exp(test, False)
+
+                b, temp_b = self.rco_exp(body, False)
+
+                if temp_b:
+
+                    stmts_b = []
+
+                    for tmp, exp in temp_b:
+
+                        stmts_b.append(Assign(targets=[tmp], value=exp))
+
+                    b = Begin(body=stmts_b, result=b)
+
+
+                o, temp_o = self.rco_exp(orelse, False)
+
+
+                if temp_o:
+
+                    stmts_b2 = []
+
+                    for tmp, exp in temp_o:
+
+                        stmts_b2.append(Assign(targets=[tmp], value=exp))
+
+                    o = Begin(body=stmts_b2, result=o)
+
+                e = IfExp(test=t, body=b, orelse=o)
+
+                if need_atomic:
+                
+                    t = Name(id=f'%tmp{self.count}')
+
+                    self.count += 1
+
+                    return (t, temp_t + [(t, e)])
+
+                return (e, temp_t)
+            
             case _:
 
                 raise ValueError(f"Unknown expression: {e}")
@@ -226,6 +301,30 @@ class Compiler:
                     stmts.append(Assign(targets=[t], value=exp))
 
                 stmts.append(Expr(value=Call(func=Name(id='print'), args=[e])))
+
+                return stmts
+
+            case If(test=test, body=body, orelse=orelse):
+
+                e, temp = self.rco_exp(test, False)
+
+                for t, exp in temp:
+
+                    stmts.append(Assign(targets=[t], value=exp))
+
+                new_body = []
+
+                for b in body:
+
+                    new_body.extend(self.rco_stmt(b))
+
+                new_orelse = []
+
+                for o in orelse:
+                    
+                    new_orelse.extend(self.rco_stmt(o))
+
+                stmts.append(If(test=e, body=new_body, orelse=new_orelse))
 
                 return stmts
 
@@ -1014,9 +1113,11 @@ if __name__ == '__main__':
     
     c = Compiler()
     prog = c.shrink(prog)
-    print(ast.unparse(ast.fix_missing_locations(prog)))
-    '''prog = c.remove_complex_operands(prog)
-    x86 = c.select_instructions(prog)
+    
+    prog = c.remove_complex_operands(prog)
+
+    print(prog)
+    '''x86 = c.select_instructions(prog)
     x86 = c.uncover_live(x86)
     x86 = c.allocate_registers(x86, flag)
     x86 = c.patch_instructions(x86)
