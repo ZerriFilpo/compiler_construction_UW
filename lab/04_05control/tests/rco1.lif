@@ -1,6 +1,0 @@
-x = input_int()
-y = (input_int() + input_int()) if x > 0 else x * 2 + 3
-if not (x + 1 < y):
-    print(1 if x > 2 and y > 2 else 0)
-else:
-    print(-x)

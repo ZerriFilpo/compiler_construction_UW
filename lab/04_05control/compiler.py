@@ -6,10 +6,13 @@ import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
 
 import ast
-from ast import (expr, stmt, Module, Name, Expr, Call, Assign, Constant, Compare, UnaryOp, BinOp, BoolOp, IfExp, If)
-from x86_ast import (X86Program, instr, arg, Variable, Instr, Callq, Reg, Immediate, Deref)
+from ast import (expr, stmt, Module, Name, Expr, Call, Assign, Constant, Compare, UnaryOp,
+                  BinOp, BoolOp, IfExp, If, Return, While)
+from x86_ast import (X86Program, instr, arg, Variable, Instr, Callq, Reg, ByteReg, Immediate, 
+                     Deref, Jump, JumpIf)
 from graph import UndirectedAdjList
-from cif import (Begin)
+from cif import (Begin, Goto, CProgram)
+from collections import deque
 
 Binding = tuple[Name, expr]
 Temporaries = list[Binding]
@@ -17,6 +20,7 @@ Temporaries = list[Binding]
 
 class Compiler:
 
+    b_size = 1
     count = 1
 
     ############################################################################
@@ -116,9 +120,23 @@ class Compiler:
 
                 return If(test=new_test, body=new_body, orelse=new_orelse)
 
+            case While(test=test, body=body, orelse=orelse):
+
+                new_body = []
+
+                for b in body:
+
+                    new_body.append(self.shrink_stmt(b))
+
+                return While(test=self.shrink_exp(test), body=new_body, orelse=[])
+
             case Expr(value=Call(func=Name(id='print'), args=[arg])):
 
                 return Expr(value=Call(func=Name(id='print'), args=[self.shrink_exp(arg)]))
+
+            case Expr(value=e):
+
+                return Expr(value=self.shrink_exp(e))
                 
             case _:
 
@@ -328,6 +346,42 @@ class Compiler:
 
                 return stmts
 
+            case While(test=test, body=body, orelse=[]):
+
+                e, temp = self.rco_exp(test, False)
+
+                if temp:
+
+                    temp_stmts = []
+
+                    for t, exp in temp:
+
+                        temp_stmts.append(Assign(targets=[t], value=exp))
+
+                    e = Begin(body=temp_stmts, result=e)
+
+                new_body = []
+
+                for b in body:
+
+                    new_body.extend(self.rco_stmt(b))
+
+                stmts.append(While(test=e, body=new_body, orelse=[]))
+
+                return stmts
+
+            case Expr(value=e):
+
+                e, temp = self.rco_exp(e, False)
+
+                for t, exp in temp:
+
+                    stmts.append(Assign(targets=[t], value=exp))
+
+                stmts.append(Expr(value=e))
+
+                return stmts
+
             case _:
 
                 return [s]
@@ -344,17 +398,209 @@ class Compiler:
 
             new_body.extend(self.rco_stmt(s))  
 
-        return Module(body=new_body, type_ignores=[])           
+        return Module(body=new_body, type_ignores=[]) 
 
+    def explicate_pred(self, test: expr, body: list[stmt], orelse: list[stmt],
+                        basic_blocks: dict[str, list[stmt]]) -> list[stmt]:
+
+        match test:
+
+            case Compare():
+
+                return [If(test, self.create_block(body, basic_blocks), self.create_block(orelse, basic_blocks))]
+
+            case Constant(value=True):
+
+                return body
+
+            case Constant(value=False):
+
+                return orelse
+
+            case UnaryOp(op=ast.Not(), operand=e):
+
+                return self.explicate_pred(e, orelse, body, basic_blocks)
+
+            case IfExp(test=t, body=b, orelse=o):
+
+                thn_block = self.create_block(body, basic_blocks)
+
+                els_block = self.create_block(orelse, basic_blocks)
+
+                novo_thn = self.explicate_pred(b, thn_block, els_block, basic_blocks)
+                novo_els = self.explicate_pred(o, thn_block, els_block, basic_blocks)
+
+                return self.explicate_pred(t, novo_thn, novo_els, basic_blocks)
+
+            case Begin(body=ss, result=r):
+
+                return self.explicate_stmts(ss, self.explicate_pred(r, body, orelse, basic_blocks), basic_blocks)
+
+            case Name() | Constant():
+
+                return [If(Compare(left=test, ops=[ast.Eq()], comparators=[Constant(False)]),
+                           self.create_block(orelse, basic_blocks), self.create_block(body, basic_blocks))]
+
+            case _:
+
+                t = Name(id=f'%tmp{self.count}')
+
+                self.count += 1
+
+                return [Assign(targets=[t], value=test)] + self.explicate_pred(t, body, orelse, basic_blocks)
+
+    def create_block(self, stmts: list[stmt], basic_blocks: dict[str, list[stmt]]) -> list[stmt]:
+
+        match stmts:
+
+            case [Goto()]:
+
+                return stmts
+
+            case _:
+            
+                name = f'block{self.b_size}'
+
+                self.b_size += 1
+                
+                basic_blocks[name] = stmts
+
+                return [Goto(name)]
+
+    def explicate_stmt(self, s: stmt, c: list[stmt], basic_blocks: dict[str, list[stmt]]) -> list[stmt]:
+
+        match s:
+
+            case If(test=test, body=body, orelse=orelse):
+
+                block3 = self.create_block(c, basic_blocks)
+
+                block1 = self.create_block(self.explicate_stmts(body, block3, basic_blocks), basic_blocks)
+                block2 = self.create_block(self.explicate_stmts(orelse, block3, basic_blocks), basic_blocks)
+
+                return self.explicate_pred(test, block1, block2, basic_blocks)
+
+            case While(test=test, body=body):
+
+                loop_label = f'block{self.b_size}'
+
+                self.b_size += 1
+
+                after_loop = self.create_block(c, basic_blocks)
+
+                body_code = self.explicate_stmts(body, [Goto(loop_label)], basic_blocks)
+
+                basic_blocks[loop_label] = self.explicate_pred(test, body_code, after_loop, basic_blocks)
+
+                return [Goto(loop_label)]
+
+            case Assign(targets=[lhs], value=rhs):
+
+                return self.explicate_assign(rhs, lhs, c, basic_blocks)
+
+            case Expr(value=Call(func=Name(id='print'))):
+
+                return [s] + c
+
+            case Expr(value=e):
+
+                return self.explicate_effect(e, c, basic_blocks)
+
+            case _:
+
+                return [s] + c
+
+    def explicate_stmts(self, ss: list[stmt], c: list[stmt], basic_blocks: dict[str, list[stmt]]) -> list[stmt]: 
+
+        for s in reversed(ss):
+
+            c = self.explicate_stmt(s, c, basic_blocks)
+
+        return c
+
+    def explicate_control(self, p: Module) -> CProgram:
+
+        basic_blocks = {}
+
+        self.b_size = 1
+
+        c = [Return(Constant(0))]
+
+        c = self.explicate_stmts(p.body, c, basic_blocks)
+
+        basic_blocks['start'] = c
+
+        return CProgram(body=basic_blocks)
+
+
+    def explicate_assign(self, rhs: expr, lhs: Name, cont: list[stmt],
+                        basic_blocks: dict[str, list[stmt]]) -> list[stmt]:
+
+        match rhs:
+
+            case IfExp(test=t, body=b, orelse=o):
+
+                cont_block = self.create_block(cont, basic_blocks)
+
+                thn = self.explicate_assign(b, lhs, cont_block, basic_blocks)
+                els = self.explicate_assign(o, lhs, cont_block, basic_blocks)
+
+                return self.explicate_pred(t, thn, els, basic_blocks)
+
+            case Begin(body=ss, result=r):
+
+                return self.explicate_stmts(ss, self.explicate_assign(r, lhs, cont, basic_blocks), basic_blocks)
+
+            case _:
+
+                return [Assign(targets=[lhs], value=rhs)] + cont
+
+
+    def explicate_effect(self, e: expr, cont: list[stmt],
+                         basic_blocks: dict[str, list[stmt]]) -> list[stmt]:
+
+        match e:
+
+            case IfExp(test=t, body=b, orelse=o):
+
+                cont_block = self.create_block(cont, basic_blocks)
+
+                thn = self.explicate_effect(b, cont_block, basic_blocks)
+                els = self.explicate_effect(o, cont_block, basic_blocks)
+
+                return self.explicate_pred(t, thn, els, basic_blocks)
+
+            case Begin(body=ss, result=r):
+
+                return self.explicate_stmts(ss, self.explicate_effect(r, cont, basic_blocks), basic_blocks)
+
+            case Call(func=Name(id='input_int'), args=[]):
+
+                return [Expr(value=e)] + cont
+
+            case _:
+
+                return cont
+
+            
     ############################################################################
     # Select Instructions
     ############################################################################
 
     # The expression e passed to select_arg should furthermore be an atom.
     # (But there is no type for atoms, so the type of e is given as expr.)
+
+    cc = {ast.Eq: 'e', ast.NotEq: 'ne', ast.Lt: 'l', ast.LtE: 'le', ast.Gt: 'g', ast.GtE: 'ge'}
+
+    neg_cc = {'e': 'ne', 'ne': 'e', 'l': 'ge', 'ge': 'l', 'le': 'g', 'g': 'le'}
+
     def select_arg(self, e: expr) -> arg:
 
         match e:    
+
+            case Constant(value=bool(v)):
+
+                return Immediate(int(v))
 
             case Constant(value=v):
 
@@ -385,9 +631,9 @@ class Compiler:
 
                 match arg:
 
-                    case Constant(value=v):
+                    case Constant():
 
-                        instrs.append(Instr('movq', [Immediate(v), Variable(var)]))
+                        instrs.append(Instr('movq', [self.select_arg(arg), Variable(var)]))
 
                     case Name(id=n):
 
@@ -517,156 +763,250 @@ class Compiler:
                         instrs.append(Instr('idivq', [self.select_arg(left), self.select_arg(right)]))
                         instrs.append(Instr('movq', [Reg('rdx'), Variable(var)]))
 
+
+                    case Compare(left=l, ops=[op], comparators=[r]):
+
+                        instrs.append(Instr('cmpq', [self.select_arg(r), self.select_arg(l)]))
+                        instrs.append(Instr('set' + self.cc[type(op)], [ByteReg('al')]))
+                        instrs.append(Instr('movzbq', [ByteReg('al'), Variable(var)]))
+
+                    case UnaryOp(op=ast.Not(), operand=Compare(left=l, ops=[op], comparators=[r])):
+
+                        instrs.append(Instr('cmpq', [self.select_arg(r), self.select_arg(l)]))
+                        instrs.append(Instr('set' + self.neg_cc[self.cc[type(op)]], [ByteReg('al')]))
+                        instrs.append(Instr('movzbq', [ByteReg('al'), Variable(var)]))
+
+                    case UnaryOp(op=ast.Not(), operand=a):
+
+                        instrs.append(Instr('movq', [self.select_arg(a), Variable(var)]))
+                        instrs.append(Instr('xorq', [Immediate(1), Variable(var)]))
+
+
+            case Goto(label=l):
+
+                instrs.append(Jump(l))
+
+            case Return(value=v):
+
+                instrs.append(Instr('movq', [self.select_arg(v), Reg('rax')]))
+                instrs.append(Jump('main_conclusion'))
+
+            case If(test=Compare(left=l, ops=[op], comparators=[r]), body=[Goto(label=thn)], orelse=[Goto(label=els)]):
+
+                instrs.append(Instr('cmpq', [self.select_arg(r), self.select_arg(l)]))
+                instrs.append(JumpIf(self.cc[type(op)], thn))
+                instrs.append(Jump(els))
+
+            case Expr(value=Call(func=Name(id='input_int'), args=[])):
+
+                instrs.append(Callq('input_int', 0))
+
         return instrs
 
 
-    def select_instructions(self, p: Module) -> X86Program:
+    def select_instructions(self, p: CProgram) -> X86Program:
 
-        instrs = []
+        blocks = {}
 
-        for s in p.body:
+        for label, block in p.body.items():
 
-            instrs.extend(self.select_stmt(s))
+            instrs = []
 
-        return X86Program(instrs)
+            for s in block:
 
-    def uncover_live(self, p: X86Program) -> X86Program:
+                instrs.extend(self.select_stmt(s))
 
-        live = set()
+            blocks[label] = instrs
 
-        self.live_after = {}
-        self.call_live = set()
+        return X86Program(blocks)
 
-        size = len(p.body) - 1
+    def read_write(self, i: instr) -> tuple[set[arg], set[arg]]:
 
-        for i in reversed(p.body):
+        W = set()
+        R = set()
 
-            W = set()
-            R = set()
+        if isinstance(i, Callq):
 
-            if isinstance(i, Callq):
+            R |= set([Reg('rdi'), Reg('rsi'), Reg('rdx'), Reg('rcx'), Reg('r8'), Reg('r9')][:i.num_args])
+            W |= {Reg('rax'), Reg('rcx'), Reg('rdx'), Reg('rsi'), Reg('rdi'), Reg('r8'), Reg('r9'), Reg('r10'), Reg('r11')}
 
-                R |= set([Reg('rdi'), Reg('rsi'), Reg('rdx'), Reg('rcx'), Reg('r8'), Reg('r9')][:i.num_args])
-                W |= {Reg('rax'), Reg('rcx'), Reg('rdx'), Reg('rsi'), Reg('rdi'), Reg('r8'), Reg('r9'), Reg('r10'), Reg('r11')}
+        if isinstance(i, Instr):
 
-                for v in live:
+            if i.instr == 'idivq':
 
-                    if isinstance(v, Variable):
+                if isinstance(i.args[1], Variable) or isinstance(i.args[1], Reg):
 
-                        self.call_live.add(v)
+                    R.add(i.args[1])
 
-            if isinstance(i, Instr):
+                if isinstance(i.args[0], Variable) or isinstance(i.args[0], Reg):
 
-                if i.instr == 'idivq':
+                    R.add(i.args[0])
 
-                    if isinstance(i.args[1], Variable) or isinstance(i.args[1], Reg):
-                                                        
-                        R.add(i.args[1])
+                if len(i.args) == 3:
 
-                    if isinstance(i.args[0], Variable) or isinstance(i.args[0], Reg):
+                    if isinstance(i.args[2], Variable) or isinstance(i.args[2], Reg):
 
-                        R.add(i.args[0])
+                        W.add(i.args[2])
 
-                    if len(i.args) == 3:
+                W.add(Reg('rax'))
+                W.add(Reg('rdx'))
 
-                        if isinstance(i.args[2], Variable) or isinstance(i.args[2], Reg):
+            elif len(i.args) == 1:
 
-                            W.add(i.args[2])
+                d = i.args[0]
 
-                    W.add(Reg('rax'))
-                    W.add(Reg('rdx'))
+                if isinstance(d, Variable) or isinstance(d, Reg):
 
-                elif len(i.args) == 1:
+                    if i.instr == 'negq':
 
-                    d = i.args[0]
+                        R.add(d)
+                        W.add(d)
+
+            if len(i.args) == 2:
+
+                s = i.args[0]
+                d = i.args[1]
+
+                if i.instr == 'movq':
+
+                    if isinstance(s, Variable) or isinstance(s, Reg):
+
+                        R.add(s)
 
                     if isinstance(d, Variable) or isinstance(d, Reg):
 
-                        if i.instr == 'negq':
+                        W.add(d)
 
-                            R.add(d)
-                            W.add(d)          
+                if i.instr == 'addq' or i.instr == 'subq' or i.instr == 'imulq' or i.instr == 'xorq':
 
-                if len(i.args) == 2:
+                    if isinstance(s, Variable) or isinstance(s, Reg):
 
-                    s = i.args[0]
-                    d = i.args[1]
+                        R.add(s)
 
-                    if i.instr == 'movq':
-                    
-                        if isinstance(s, Variable) or isinstance(s, Reg):
+                    if isinstance(d, Variable) or isinstance(d, Reg):
+
+                        R.add(d)
+                        W.add(d)
+
+                if i.instr == 'cmpq':
+
+                    if isinstance(s, Variable) or isinstance(s, Reg):
+
+                        R.add(s)
+
+                    if isinstance(d, Variable) or isinstance(d, Reg):
+
+                        R.add(d)
+
+                if i.instr == 'movzbq':
+
+                    # a origem é %al: ignora-se, só conta o destino
+                    if isinstance(d, Variable) or isinstance(d, Reg):
+
+                        W.add(d)
+
+            elif len(i.args) == 3:
+
+                s = i.args[1]
+                d = i.args[2]
+
+                if i.instr == 'imulq':
+
+                    if isinstance(s, Variable) or isinstance(s, Reg):
+
+                        R.add(s)
+
+                    if isinstance(d, Variable) or isinstance(d, Reg):
+
+                        W.add(d)
+
+        return R, W
+
     
-                            R.add(s)
-    
-                        if isinstance(d, Variable) or isinstance(d, Reg):
-    
-                            W.add(d)
+    def live_block(self, instrs: list[instr], live_before_block: dict[str, set[arg]]) -> tuple[set[arg], list[tuple[instr, set[arg], set[arg]]]]:
 
+        live = set()
 
-                    if i.instr == 'addq':
-                    
-                        if isinstance(s, Variable) or isinstance(s, Reg):
+        info = []
 
-                            R.add(s)
+        for i in reversed(instrs):
 
-                        if isinstance(d, Variable) or isinstance(d, Reg):
+            match i:
 
-                            R.add(d)
-                            W.add(d)
+                case Jump(label=l):
 
-                    if i.instr == 'subq':
-                    
-                        if isinstance(s, Variable) or isinstance(s, Reg):
+                    live = set(live_before_block.get(l, set()))
 
-                            R.add(s)
+                case JumpIf(label=l):
 
-                        if isinstance(d, Variable) or isinstance(d, Reg):
+                    live = live | live_before_block.get(l, set())
 
-                            R.add(d)
-                            W.add(d)
+            R, W = self.read_write(i)
 
-                    if i.instr == 'imulq':
-
-                        if isinstance(s, Variable) or isinstance(s, Reg):
-
-                            R.add(s)
-
-                        if isinstance(d, Variable) or isinstance(d, Reg): 
-
-                            R.add(d)
-                            W.add(d)
-
-                elif len(i.args) == 3:
-
-                    s = i.args[1]
-                    d = i.args[2]
-
-                    if i.instr == 'imulq':
-
-                        if isinstance(s, Variable) or isinstance(s, Reg):
-
-                            R.add(s)
-
-                        if isinstance(d, Variable) or isinstance(d, Reg):
-
-                            W.add(d)
-
-            self.live_after[size] = (W, live)
-            size -= 1
+            info.append((i, W, live))
 
             live = (live - W) | R
-        
+
+        info.reverse()
+
+        return live, info
+
+
+    def uncover_live(self, p: X86Program) -> X86Program:
+
+        preds = {label: set() for label in p.body}
+
+        for label, instrs in p.body.items():
+
+            for i in instrs:
+
+                if isinstance(i, (Jump, JumpIf)) and i.label in preds:
+
+                    preds[i.label].add(label)
+
+        live_before_block = {label: set() for label in p.body}
+
+        worklist = deque(p.body.keys())
+
+        while worklist:
+
+            label = worklist.pop()
+
+            live, _ = self.live_block(p.body[label], live_before_block)
+
+            if live != live_before_block[label]:
+
+                live_before_block[label] = live
+
+                worklist.extend(preds[label])
+
+        self.live_info = []
+
+        for label, instrs in p.body.items():
+
+            _, info = self.live_block(instrs, live_before_block)
+
+            self.live_info.extend(info)
+
         return p
 
     def build_interference_graph(self, p: X86Program) -> UndirectedAdjList:
 
         graph = UndirectedAdjList()
 
-        for i in range(len(p.body)):
+        for instrs in p.body.values():
 
-            W, live = self.live_after[i]
+            for instr in instrs:
 
-            instr = p.body[i]
+                if isinstance(instr, Instr):
+
+                    for a in instr.args:
+
+                        if isinstance(a, Variable):
+
+                            graph.add_vertex(a)
+
+        for instr, W, live in self.live_info:
 
             if isinstance(instr, Instr) and instr.instr == 'idivq' and isinstance(instr.args[1], Variable):
             
@@ -773,9 +1113,15 @@ class Compiler:
 
             inverted[i] = r
 
+        all_instrs = []
+
+        for instrs in p.body.values():
+
+            all_instrs.extend(instrs)
+
         contagem = {}
 
-        for instr in p.body:
+        for instr in all_instrs:
 
             if isinstance(instr, Instr):
 
@@ -807,7 +1153,7 @@ class Compiler:
                 
         offset = -8 * (C + 1)
 
-        for instr in p.body:
+        for instr in all_instrs:
 
             if isinstance(instr, Instr):
 
@@ -832,15 +1178,20 @@ class Compiler:
 
                                 home[arg] = variables[colors[arg]]
                                 
-        new_body = []    
+        blocks = {}
 
-        for i in p.body:
+        for label, instrs in p.body.items():
 
-            new_body.append(self.assign_homes_instr(i, home))
+            new_body = []
 
-        return X86Program(new_body)
+            for i in instrs:
+
+                new_body.append(self.assign_homes_instr(i, home))
+
+            blocks[label] = new_body
+
+        return X86Program(blocks)
            
-
     ############################################################################
     # Assign Homes
     ############################################################################
@@ -988,6 +1339,46 @@ class Compiler:
                     instrs.append(Instr('movq', [Reg('rax'), i.args[2]]))
 
                 return instrs
+
+            if i.instr == 'cmpq':
+
+                if isinstance(i.args[1], Immediate):
+
+                    instrs.append(Instr('movq', [i.args[1], Reg('rax')]))
+                    instrs.append(Instr('cmpq', [i.args[0], Reg('rax')]))
+
+                    return instrs
+
+                if isinstance(i.args[0], Deref) and isinstance(i.args[1], Deref):
+
+                    instrs.append(Instr('movq', [i.args[0], Reg('rax')]))
+                    instrs.append(Instr('cmpq', [Reg('rax'), i.args[1]]))
+
+                    return instrs
+
+                return [i]
+
+            if i.instr == 'movzbq':
+
+                if not isinstance(i.args[1], Reg):
+
+                    instrs.append(Instr('movzbq', [i.args[0], Reg('rax')]))
+                    instrs.append(Instr('movq', [Reg('rax'), i.args[1]]))
+
+                    return instrs
+
+                return [i]
+
+            if i.instr == 'xorq':
+
+                if isinstance(i.args[0], Deref) and isinstance(i.args[1], Deref):
+
+                    instrs.append(Instr('movq', [i.args[0], Reg('rax')]))
+                    instrs.append(Instr('xorq', [Reg('rax'), i.args[1]]))
+
+                    return instrs
+
+                return [i]
                 
             return [i]
     
@@ -995,19 +1386,25 @@ class Compiler:
 
     def patch_instructions(self, p: X86Program) -> X86Program:
 
-        new_body = []
-        
-        for i in p.body:
+        blocks = {}
 
-            if isinstance(i, Instr):
+        for label, instrs in p.body.items():
 
-                new_body.extend(self.patch_instr(i))
+            new_body = []
 
-            else:
+            for i in instrs:
 
-                new_body.append(i)
+                if isinstance(i, Instr):
 
-        return X86Program(new_body)
+                    new_body.extend(self.patch_instr(i))
+
+                else:
+
+                    new_body.append(i)
+
+            blocks[label] = new_body
+
+        return X86Program(blocks)
 
                     
 
@@ -1028,15 +1425,17 @@ class Compiler:
 
         offset = 0
 
-        for i in p.body:
+        for instrs in p.body.values():
 
-            if isinstance(i, Instr):
+            for i in instrs:
 
-                for a in i.args:
+                if isinstance(i, Instr):
 
-                    if isinstance(a, Deref):
+                    for a in i.args:
 
-                        offset = max(offset, abs(a.offset))
+                        if isinstance(a, Deref):
+
+                            offset = max(offset, abs(a.offset))
 
         offset = max(offset, 8 * len(self.used_callee))
 
@@ -1052,33 +1451,26 @@ class Compiler:
 
         prelude.append(Instr('subq', [Immediate(offset), Reg('rsp')]))
 
-        if len(self.used_callee) == 0:
+        prelude.append(Jump('start'))
 
-            conclusion = [
+        conclusion = []
 
-                Instr('movq', [Reg('rbp'), Reg('rsp')]),
-                Instr('movq', [Immediate(0), Reg('rax')]),
-                Instr('popq', [Reg('rbp')]),
-                Instr('retq', []),
+        conclusion.append(Instr('addq', [Immediate(offset), Reg('rsp')]))
 
-            ]
+        for r in reversed(self.used_callee):
 
-        else:
+            conclusion.append(Instr('popq', [Reg(r)]))
 
-            conclusion = []
+        conclusion.append(Instr('popq', [Reg('rbp')]))
+        conclusion.append(Instr('retq', []))
 
-            conclusion.append(Instr('addq', [Immediate(offset), Reg('rsp')]))
+        blocks = {'main': prelude}
 
-            for r in reversed(self.used_callee):
-            
-                conclusion.append(Instr('popq', [Reg(r)]))
+        blocks.update(p.body)
 
-            conclusion.append(Instr('movq', [Immediate(0), Reg('rax')]))
-            conclusion.append(Instr('popq', [Reg('rbp')]))
-            conclusion.append(Instr('retq', []))
-            
+        blocks['main_conclusion'] = conclusion
 
-        return X86Program(prelude + p.body + conclusion)
+        return X86Program(blocks)
 
 
 
@@ -1116,10 +1508,11 @@ if __name__ == '__main__':
     
     prog = c.remove_complex_operands(prog)
 
-    print(prog)
-    '''x86 = c.select_instructions(prog)
+    prog = c.explicate_control(prog)
+
+    x86 = c.select_instructions(prog)
     x86 = c.uncover_live(x86)
     x86 = c.allocate_registers(x86, flag)
     x86 = c.patch_instructions(x86)
     x86 = c.prelude_and_conclusion(x86)
-    print(x86)'''
+    print(x86)

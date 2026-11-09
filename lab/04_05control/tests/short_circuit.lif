@@ -1,0 +1,10 @@
+x = input_int()
+if x > 0 and input_int() > 5:
+    print(1)
+else:
+    print(0)
+if x > 0 or input_int() > 5:
+    print(2)
+else:
+    print(3)
+print(input_int())

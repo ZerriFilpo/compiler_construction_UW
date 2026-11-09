@@ -1,0 +1,9 @@
+x = input_int()
+y = (x + 1) if x > 0 else (x - 1)
+print(y)
+i = 0
+s = 0
+while input_int() + i > 0:
+    s = s + (i * 2 if i > 1 else i + 100)
+    i = i + 1
+print(s)

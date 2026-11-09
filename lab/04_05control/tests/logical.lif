@@ -1,0 +1,12 @@
+a = input_int()
+b = input_int()
+c = a < b and b < 10
+d = not (a == b) or a > 100
+e = not c
+print(c + d + e)
+if (a > 0 and b > 0) or not (a != b):
+    print(1)
+else:
+    print(0)
+if (a == 0 if a < 1 else a == 2):
+    print(2)
