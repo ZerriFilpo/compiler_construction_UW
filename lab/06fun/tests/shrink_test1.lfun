@@ -1,0 +1,17 @@
+def soma(x, y):
+    return x + y
+
+def positivo(x):
+    return x > 0 and x < 100
+
+def escolhe(a, b):
+    if a > b or a == 0:
+        return a
+    else:
+        return b
+
+x = soma(1, 2)
+print(x)
+print(escolhe(soma(x, 1), 3))
+if positivo(x) and not (x == 5):
+    print(1)

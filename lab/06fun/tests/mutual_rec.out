@@ -1,0 +1,19 @@
+def even(n):
+    if n == 0:
+        return True
+    else:
+        return odd(n - 1)
+
+def odd(n):
+    if n == 0:
+        return False
+    else:
+        return even(n - 1)
+
+def main():
+    x = input_int()
+    if not odd(x) if even(x) else False:
+        print(1)
+    else:
+        print(0)
+    return 0
