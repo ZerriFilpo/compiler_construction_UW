@@ -1,19 +1,26 @@
 def even(n):
     if n == 0:
-        return True
+      return True
     else:
-        return odd(n - 1)
+      %tmp1 = (n - 1)
+      return odd(%tmp1)
 
 def odd(n):
     if n == 0:
-        return False
+      return False
     else:
-        return even(n - 1)
+      %tmp2 = (n - 1)
+      return even(%tmp2)
 
 def main():
     x = input_int()
-    if not odd(x) if even(x) else False:
-        print(1)
+    if ({
+      %tmp3 = odd(x)
+      produce not(%tmp3)
+    } if even(x) else False):
+      print(1)
     else:
-        print(0)
+      print(0)
     return 0
+
+

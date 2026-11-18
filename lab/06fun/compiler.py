@@ -7,12 +7,18 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
 
 import ast
 from ast import (expr, stmt, Module, Name, Expr, Call, Assign, Constant, Compare, UnaryOp,
-                  BinOp, BoolOp, IfExp, If, Return, While, FunctionDef, arg, arguments)
+                  BinOp, BoolOp, IfExp, If, Return, While, FunctionDef, arguments)
 from x86_ast import (X86Program, instr, arg, Variable, Instr, Callq, Reg, ByteReg, Immediate, 
                      Deref, Jump, JumpIf)
 from graph import UndirectedAdjList
 from cif import (Begin, Goto, CProgram)
 from collections import deque
+
+def str_FunctionDef(self):
+    params = ', '.join(a.arg for a in self.args.args)
+    return f"def {self.name}({params}):\n" + ''.join(str(s) for s in self.body) + "\n"
+
+FunctionDef.__str__ = str_FunctionDef
 
 Binding = tuple[Name, expr]
 Temporaries = list[Binding]
@@ -164,7 +170,7 @@ class Compiler:
 
         self.count = 1
 
-        funcs = []
+        funcs: list[FunctionDef] = []
 
         main = []
 
@@ -177,6 +183,13 @@ class Compiler:
             else:    
 
                 main.append(s)
+
+        self.function_arity = {d.name: len(d.args.args) for d in funcs}
+
+        '''def soma(x, y):
+            return x + y
+        print(soma(1))   Missing argument "y" 
+        '''
 
         for fun in funcs:
 
@@ -298,6 +311,30 @@ class Compiler:
 
                 return (e, [])
 
+            case Call(func=func, args=args):
+            
+                new_args = []
+                temps = []
+
+                for arg in args:
+
+                    e, temp = self.rco_exp(arg, True)
+                    new_args.append(e)
+                    temps.extend(temp)
+
+                e = Call(func=func, args=new_args)
+
+                if need_atomic:
+                
+                    t = Name(id=f'%tmp{self.count}')
+
+                    self.count += 1
+
+                    return (t, temps + [(t, e)])
+                
+
+                return (e, temps)
+
             case IfExp(test=test, body=body, orelse=orelse):
             
                 t, temp_t = self.rco_exp(test, False)
@@ -363,6 +400,22 @@ class Compiler:
 
                 return stmts 
 
+            case Return(value=r):
+
+                if r is None:
+
+                    r = Constant(0)
+            
+                e, temp = self.rco_exp(r, False)
+
+                for t, exp in temp:
+
+                    stmts.append(Assign(targets=[t], value=exp))
+
+                stmts.append(Return(value=e))
+
+                return stmts 
+
             case Expr(value=Call(func=Name(id='print'), args=[arg])):
 
                 e, temp = self.rco_exp(arg, True)
@@ -422,7 +475,7 @@ class Compiler:
                 stmts.append(While(test=e, body=new_body, orelse=[]))
 
                 return stmts
-
+            
             case Expr(value=e):
 
                 e, temp = self.rco_exp(e, False)
@@ -432,6 +485,18 @@ class Compiler:
                     stmts.append(Assign(targets=[t], value=exp))
 
                 stmts.append(Expr(value=e))
+
+                return stmts
+
+            case FunctionDef(name=name, args=args, body=body, decorator_list=decorator_list, returns=returns):
+
+                new_body = []
+
+                for b in body:
+                
+                    new_body.extend(self.rco_stmt(b))
+
+                stmts.append(FunctionDef(name=name, args=args, body=new_body, decorator_list=decorator_list, returns=returns))
 
                 return stmts
 
@@ -559,6 +624,10 @@ class Compiler:
 
                 return self.explicate_effect(e, c, basic_blocks)
 
+            case Return(value):
+
+                return self.explicate_tail(value, basic_blocks) 
+
             case _:
 
                 return [s] + c
@@ -635,6 +704,22 @@ class Compiler:
 
                 return cont
 
+    def explicate_tail(self, e:expr, basic_blocks: dict[str, list[stmt]]) -> list[stmt]:
+
+        if isinstance(e, IfExp):
+
+            new_body = self.explicate_tail(e.body, basic_blocks=basic_blocks)
+            new_orelse = self.explicate_tail(e.orelse, basic_blocks=basic_blocks)
+
+            return self.explicate_pred(e.test, new_body, new_orelse, basic_blocks)
+
+        if isinstance(e, Begin):
+
+            beg = self.explicate_tail(e.result, basic_blocks=basic_blocks)
+
+            return self.explicate_stmts(e.body, beg, basic_blocks=basic_blocks)
+
+        return [Return(e)]
 
             
     ############################################################################
@@ -1560,11 +1645,11 @@ if __name__ == '__main__':
     
     c = Compiler()
     prog = c.shrink(prog)
+    prog = c.remove_complex_operands(prog)
 
-    print(ast.unparse(ast.fix_missing_locations(prog)))
+    print(prog)
 
-    """prog = c.remove_complex_operands(prog)
-    prog = c.explicate_control(prog)
+    """prog = c.explicate_control(prog)
     x86 = c.select_instructions(prog)
     x86 = c.uncover_live(x86)
     x86 = c.allocate_registers(x86, flag)

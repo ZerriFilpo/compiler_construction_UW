@@ -1,13 +1,25 @@
 def fib(n):
     if n < 2:
-        return n
+      return n
     else:
-        return fib(n - 1) + fib(n - 2)
+      %tmp1 = (n - 1)
+      %tmp2 = fib(%tmp1)
+      %tmp3 = (n - 2)
+      %tmp4 = fib(%tmp3)
+      return (%tmp2 + %tmp4)
 
 def fact(n):
-    return 1 if n == 0 else n * fact(n - 1)
+    return (1 if n == 0 else {
+      %tmp5 = (n - 1)
+      %tmp6 = fact(%tmp5)
+      produce (n * %tmp6)
+    })
 
 def main():
-    print(fib(10))
-    print(fact(5))
+    %tmp7 = fib(10)
+    print(%tmp7)
+    %tmp8 = fact(5)
+    print(%tmp8)
     return 0
+
+
