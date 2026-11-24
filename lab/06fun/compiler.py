@@ -8,10 +8,11 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
 import ast
 from ast import (expr, stmt, Module, Name, Expr, Call, Assign, Constant, Compare, UnaryOp,
                   BinOp, BoolOp, IfExp, If, Return, While, FunctionDef, arguments)
-from x86_ast import (X86Program, instr, arg, Variable, Instr, Callq, Reg, ByteReg, Immediate, 
+from x86_ast import (X86Program, X86Def, instr, arg, Variable, Instr, Callq, Reg, ByteReg, Immediate,
                      Deref, Jump, JumpIf)
 from graph import UndirectedAdjList
 from cif import (Begin, Goto, CProgram)
+from cfun import (CFunDef, CFunProgram)
 from collections import deque
 
 def str_FunctionDef(self):
@@ -19,6 +20,9 @@ def str_FunctionDef(self):
     return f"def {self.name}({params}):\n" + ''.join(str(s) for s in self.body) + "\n"
 
 FunctionDef.__str__ = str_FunctionDef
+
+# registradores dos argumentos, por ordem
+ARG_REGS = ['rdi', 'rsi', 'rdx', 'rcx', 'r8', 'r9']
 
 Binding = tuple[Name, expr]
 Temporaries = list[Binding]
@@ -96,9 +100,12 @@ class Compiler:
 
                 return IfExp(test=self.shrink_exp(test), body=self.shrink_exp(body), orelse=self.shrink_exp(orelse))
 
-            case Call(func=func, args=args, keywords=keywords):
+            case Call(func=Name(id=f), args=args, keywords=keywords):
 
-                new_func = self.shrink_exp(func)
+                # numero errado de argumentos e rejeitado
+                if f in self.function_arity and len(args) != self.function_arity[f]:
+
+                    raise ValueError(f"'{f}' expects {self.function_arity[f]} argument(s), got {len(args)}")
 
                 new_args = []
 
@@ -106,7 +113,17 @@ class Compiler:
 
                     new_args.append(self.shrink_exp(arg))
 
-                return Call(func=new_func, args=new_args, keywords=keywords)
+                # o func nao passa pelo shrink_exp
+                # o nome de uma label, nao um valor
+                return Call(func=Name(id=f), args=new_args, keywords=keywords)
+
+            case Name(id=n):
+
+                if n in self.function_arity:
+
+                    raise ValueError(f"function '{n}' can only be called, not used as a value")
+
+                return e
 
             case _:
 
@@ -164,6 +181,20 @@ class Compiler:
 
                 return s
 
+    def check_def(self, fun: FunctionDef) -> None:
+
+        # so aceita parametros simples: def f(x, y)
+        a = fun.args
+
+        if a.vararg or a.kwarg or a.defaults or a.kwonlyargs or a.posonlyargs or a.kw_defaults:
+
+            raise ValueError(f"function '{fun.name}': only plain parameters are supported")
+
+        if len(a.args) > 6:
+
+            raise ValueError(f"function '{fun.name}': at most 6 parameters are supported")
+
+
     def shrink(self, p: Module) -> Module:
 
         new_body = []
@@ -172,38 +203,39 @@ class Compiler:
 
         funcs: list[FunctionDef] = []
 
-        main = []
+        main: list[stmt] = []
+
+        self.function_arity: dict[str, int] = {}
 
         for s in p.body:
 
             if isinstance(s, FunctionDef):
 
+                # um def depois de codigo de topo: em Python a funcao ainda nao existiria
+                if main:
+
+                    raise ValueError(f"function '{s.name}' must be defined before the top-level code")
+
+                self.check_def(s)
+
+                self.function_arity[s.name] = len(s.args.args)
+
                 funcs.append(s)
 
-            else:    
+            else:
 
                 main.append(s)
 
-        self.function_arity = {d.name: len(d.args.args) for d in funcs}
-
-        '''def soma(x, y):
-            return x + y
-        print(soma(1))   Missing argument "y" 
-        '''
-
         for fun in funcs:
 
-            if isinstance(fun, FunctionDef):
+            fun_b = []
 
-                fun_b = []
+            for s_fun in fun.body:
 
-                for s_fun in fun.body:
+                fun_b.append(self.shrink_stmt(s_fun))
 
-                    fun_b.append(self.shrink_stmt(s_fun))
-
-                new_body.append(FunctionDef(name=fun.name, args=fun.args, body=fun_b,
-                                            decorator_list=fun.decorator_list, returns=fun.returns,
-                                            type_comment=fun.type_comment, type_params=fun.type_params))
+            new_body.append(FunctionDef(name=fun.name, args=fun.args, body=fun_b,
+                                        decorator_list=[], returns=fun.returns))
 
         main_body = []
 
@@ -216,7 +248,7 @@ class Compiler:
         new_body.append(FunctionDef(name='main',
                                     args=arguments(posonlyargs=[], args=[], kwonlyargs=[], kw_defaults=[], defaults=[]),
                                     body=main_body,
-                                    decorator_list=[]))  
+                                    decorator_list=[]))
 
         return Module(body=new_body, type_ignores=[])           
 
@@ -322,7 +354,7 @@ class Compiler:
                     new_args.append(e)
                     temps.extend(temp)
 
-                e = Call(func=func, args=new_args)
+                e = Call(func=func, args=new_args, keywords=[])
 
                 if need_atomic:
                 
@@ -640,19 +672,27 @@ class Compiler:
 
         return c
 
-    def explicate_control(self, p: Module) -> CProgram:
+    def explicate_control(self, p: Module) -> CFunProgram:
 
-        basic_blocks = {}
+        funs = []
 
         self.b_size = 1
 
-        c = [Return(Constant(0))]
+        for f in p.body:
 
-        c = self.explicate_stmts(p.body, c, basic_blocks)
+            assert isinstance(f, FunctionDef)
 
-        basic_blocks['start'] = c
+            basic_blocks = {}
 
-        return CProgram(body=basic_blocks)
+            c = [Return(Constant(0))]
+
+            c = self.explicate_stmts(f.body, c, basic_blocks)
+
+            basic_blocks[f'{f.name}_start'] = c
+
+            funs.append(CFunDef(f.name, [x.arg for x in f.args.args], basic_blocks))
+
+        return CFunProgram(funs)
 
 
     def explicate_assign(self, rhs: expr, lhs: Name, cont: list[stmt],
@@ -696,7 +736,7 @@ class Compiler:
 
                 return self.explicate_stmts(ss, self.explicate_effect(r, cont, basic_blocks), basic_blocks)
 
-            case Call(func=Name(id='input_int'), args=[]):
+            case Call(): #todas chamadas agora
 
                 return [Expr(value=e)] + cont
 
@@ -753,6 +793,18 @@ class Compiler:
 
                 raise ValueError(f"Unknown statement: {e}")
 
+    def select_call(self, f: str, args: list[expr]) -> list[instr]:
+
+        instrs = []
+
+        for a, r in zip(args, ARG_REGS):
+
+            instrs.append(Instr('movq', [self.select_arg(a), Reg(r)]))
+
+        instrs.append(Callq(f, len(args)))
+
+        return instrs
+
 
 
     def select_stmt(self, s: stmt) -> list[instr]:
@@ -781,6 +833,11 @@ class Compiler:
                     case Call(func=Name(id='input_int'), args=[]):
 
                         instrs.append(Callq('input_int', 0))
+                        instrs.append(Instr('movq', [Reg('rax'), Variable(var)]))
+
+                    case Call(func=Name(id=f), args=args): #stmts para funcs definidas 
+
+                        instrs.extend(self.select_call(f, args))
                         instrs.append(Instr('movq', [Reg('rax'), Variable(var)]))
 
                     case UnaryOp(op=ast.USub(), operand=arg):
@@ -927,8 +984,19 @@ class Compiler:
 
             case Return(value=v):
 
-                instrs.append(Instr('movq', [self.select_arg(v), Reg('rax')]))
-                instrs.append(Jump('main_conclusion'))
+                if isinstance(v, (Name, Constant)):
+
+                    instrs.append(Instr('movq', [self.select_arg(v), Reg('rax')]))
+
+                else:
+
+                    t = f'%ret{self.count}'
+                    self.count += 1
+
+                    instrs.extend(self.select_stmt(Assign(targets=[Name(id=t)], value=v)))
+                    instrs.append(Instr('movq', [Variable(t), Reg('rax')]))
+
+                instrs.append(Jump(f'{self.current_fn}_conclusion'))
 
             case If(test=Compare(left=l, ops=[op], comparators=[r]), body=[Goto(label=thn)], orelse=[Goto(label=els)]):
 
@@ -940,25 +1008,47 @@ class Compiler:
 
                 instrs.append(Callq('input_int', 0))
 
+            case Expr(value=Call(func=Name(id=f), args=args)):
+
+                instrs.extend(self.select_call(f, args))
+
 
         return instrs
 
 
-    def select_instructions(self, p: CProgram) -> X86Program:
+    def select_instructions(self, p: CFunProgram) -> list[X86Def]:
 
-        blocks = {}
+        result = []
 
-        for label, block in p.body.items():
+        for fun in p.defs:
 
-            instrs = []
+            self.current_fn = fun.name
 
-            for s in block:
+            blocks = {}
 
-                instrs.extend(self.select_stmt(s))
+            for label, block in fun.blocks.items():
 
-            blocks[label] = instrs
+                instrs = []
 
-        return X86Program(blocks)
+                for s in block:
+
+                    instrs.extend(self.select_stmt(s))
+
+                blocks[label] = instrs
+
+            params = []
+
+            for p, r in zip(fun.params, ARG_REGS):
+
+                params.append(Instr('movq', [Reg(r), Variable(p)]))
+
+            start = f'{fun.name}_start'
+
+            blocks[start] = params + blocks[start]
+
+            result.append(X86Def(fun.name, blocks))
+
+        return result
 
     def read_write(self, i: instr) -> tuple[set[arg], set[arg]]:
 
@@ -1554,7 +1644,7 @@ class Compiler:
     # Prelude & Conclusion
     ############################################################################
 
-    def prelude_and_conclusion(self, p: X86Program) -> X86Program:
+    def prelude_and_conclusion(self, p: X86Program, name: str) -> dict[str, list[instr]]:
 
         prelude = [
 
@@ -1591,7 +1681,7 @@ class Compiler:
 
         prelude.append(Instr('subq', [Immediate(offset), Reg('rsp')]))
 
-        prelude.append(Jump('start'))
+        prelude.append(Jump(f'{name}_start'))
 
         conclusion = []
 
@@ -1604,13 +1694,30 @@ class Compiler:
         conclusion.append(Instr('popq', [Reg('rbp')]))
         conclusion.append(Instr('retq', []))
 
-        blocks = {'main': prelude}
+        blocks = {name: prelude}
 
         blocks.update(p.body)
 
-        blocks['main_conclusion'] = conclusion
+        blocks[f'{name}_conclusion'] = conclusion
 
-        return X86Program(blocks)
+        return blocks
+
+
+    def backend(self, defs: list[X86Def], flag: int) -> X86Program:
+
+        all_blocks = {}
+
+        for d in defs:
+
+            p = X86Program(d.blocks)
+
+            p = self.uncover_live(p)
+            p = self.allocate_registers(p, flag)
+            p = self.patch_instructions(p)
+
+            all_blocks.update(self.prelude_and_conclusion(p, d.name))
+
+        return X86Program(all_blocks, entries=frozenset(d.name for d in defs))
 
 
 
@@ -1646,13 +1753,7 @@ if __name__ == '__main__':
     c = Compiler()
     prog = c.shrink(prog)
     prog = c.remove_complex_operands(prog)
-
-    print(prog)
-
-    """prog = c.explicate_control(prog)
-    x86 = c.select_instructions(prog)
-    x86 = c.uncover_live(x86)
-    x86 = c.allocate_registers(x86, flag)
-    x86 = c.patch_instructions(x86)
-    x86 = c.prelude_and_conclusion(x86)
-    print(x86)"""
+    prog = c.explicate_control(prog)
+    defs = c.select_instructions(prog)
+    x86 = c.backend(defs, flag)
+    print(x86)

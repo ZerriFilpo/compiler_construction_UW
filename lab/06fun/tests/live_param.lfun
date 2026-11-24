@@ -1,0 +1,9 @@
+def g(x):
+    return x + 1
+
+def f(a, b):
+    c = g(a)
+    d = g(b)
+    return a + b + c + d
+
+print(f(10, 20))

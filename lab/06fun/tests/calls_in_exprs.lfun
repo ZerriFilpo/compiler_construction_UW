@@ -1,0 +1,15 @@
+def sq(x):
+    return x * x
+
+def add(a, b):
+    return a + b
+
+x = add(sq(2), sq(3)) + sq(add(1, 1))
+print(x)
+y = sq(x) if add(x, 1) > 10 else 0
+print(y)
+i = 0
+while sq(i) < 50:
+    i = add(i, 1)
+print(i)
+print(sq(input_int()) // add(1, 1) % 7)

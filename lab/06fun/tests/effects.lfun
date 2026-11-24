@@ -1,0 +1,17 @@
+def show(x):
+    print(x)
+    return 0
+
+def readsum(n):
+    s = 0
+    i = 0
+    while i < n:
+        s = s + input_int()
+        i = i + 1
+    return s
+
+show(5)
+show(input_int())
+print(readsum(3))
+if show(1) == 0:
+    print(2)

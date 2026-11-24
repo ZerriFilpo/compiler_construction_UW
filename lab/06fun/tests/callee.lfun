@@ -1,0 +1,16 @@
+def clobber(x):
+    a = x + 1
+    b = a + 1
+    c = b + 1
+    d = c + 1
+    e = d + 1
+    print(e)
+    return a + b + c + d + e
+
+p = input_int()
+q = p + 1
+r = q + 1
+s = r + 1
+t = s + 1
+u = clobber(p)
+print(p + q + r + s + t + u)

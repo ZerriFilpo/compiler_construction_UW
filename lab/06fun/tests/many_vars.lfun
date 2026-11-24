@@ -1,0 +1,18 @@
+def mix(a, b, c):
+    d = a + b
+    e = b + c
+    f = c + a
+    g = d * e
+    h = e * f
+    k = f * d
+    l = g + h + k
+    m = mix2(l, d)
+    return a + b + c + d + e + f + g + h + k + l + m
+
+def mix2(x, y):
+    z = x - y
+    w = z * 2
+    return z + w + x + y
+
+print(mix(1, 2, 3))
+print(mix(input_int(), 4, 5))

@@ -1,0 +1,10 @@
+def six(a, b, c, d, e, f):
+    return a * 100000 + b * 10000 + c * 1000 + d * 100 + e * 10 + f
+
+def sub(a, b):
+    return a - b
+
+print(six(1, 2, 3, 4, 5, 6))
+print(sub(10, 3))
+print(sub(3, 10))
+print(six(sub(9, 8), 2, sub(5, 2), 4, 5, sub(7, 1)))
