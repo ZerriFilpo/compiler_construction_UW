@@ -119,6 +119,8 @@ class Compiler:
 
             case Name(id=n):
 
+                #func fora de uma chamada
+
                 if n in self.function_arity:
 
                     raise ValueError(f"function '{n}' can only be called, not used as a value")
@@ -184,6 +186,7 @@ class Compiler:
     def check_def(self, fun: FunctionDef) -> None:
 
         # so aceita parametros simples: def f(x, y)
+        #max 6
         a = fun.args
 
         if a.vararg or a.kwarg or a.defaults or a.kwonlyargs or a.posonlyargs or a.kw_defaults:
@@ -197,6 +200,9 @@ class Compiler:
 
     def shrink(self, p: Module) -> Module:
 
+        # agora separa os defs
+        # main como func
+
         new_body = []
 
         self.count = 1
@@ -205,13 +211,13 @@ class Compiler:
 
         main: list[stmt] = []
 
-        self.function_arity: dict[str, int] = {}
+        self.function_arity: dict[str, int] = {} # num de parametros 
 
         for s in p.body:
 
             if isinstance(s, FunctionDef):
 
-                # um def depois de codigo de topo: em Python a funcao ainda nao existiria
+                # um def depois de codigo de topo: em py a funcao ainda nao existiria
                 if main:
 
                     raise ValueError(f"function '{s.name}' must be defined before the top-level code")
@@ -226,22 +232,25 @@ class Compiler:
 
                 main.append(s)
 
-        for fun in funcs:
+        for fun in funcs: #shrinka os corpos das funcs
 
             fun_b = []
 
-            for s_fun in fun.body:
+            for s_fun in fun.body: 
 
                 fun_b.append(self.shrink_stmt(s_fun))
 
-            new_body.append(FunctionDef(name=fun.name, args=fun.args, body=fun_b,
-                                        decorator_list=[], returns=fun.returns))
+            new_body.append(FunctionDef(name=fun.name, args=fun.args, body=fun_b, 
+                                        decorator_list=[], returns=fun.returns)) 
 
         main_body = []
 
         for s in main:
 
             main_body.append(self.shrink_stmt(s))
+
+        # codigo se torna em func e return 0
+        # n tem parametros Posso ter parametros como em C?
 
         main_body.append(Return(value=Constant(0)))
 
@@ -343,7 +352,9 @@ class Compiler:
 
                 return (e, [])
 
-            case Call(func=func, args=args):
+            case Call(func=func, args=args): #caso novo
+
+                # args viram atomos
             
                 new_args = []
                 temps = []
@@ -434,6 +445,8 @@ class Compiler:
 
             case Return(value=r):
 
+                # pode permanecer complexo 
+
                 if r is None:
 
                     r = Constant(0)
@@ -445,6 +458,9 @@ class Compiler:
                     stmts.append(Assign(targets=[t], value=exp))
 
                 stmts.append(Return(value=e))
+
+                # descarta continuacao
+                # nao roda depois do return
 
                 return stmts 
 
@@ -521,6 +537,8 @@ class Compiler:
                 return stmts
 
             case FunctionDef(name=name, args=args, body=body, decorator_list=decorator_list, returns=returns):
+
+                # aplica rco no body
 
                 new_body = []
 
@@ -746,6 +764,8 @@ class Compiler:
 
     def explicate_tail(self, e:expr, basic_blocks: dict[str, list[stmt]]) -> list[stmt]:
 
+        # return em cada ramo de if
+
         if isinstance(e, IfExp):
 
             new_body = self.explicate_tail(e.body, basic_blocks=basic_blocks)
@@ -795,6 +815,8 @@ class Compiler:
 
     def select_call(self, f: str, args: list[expr]) -> list[instr]:
 
+        # guardar regs para liveness
+
         instrs = []
 
         for a, r in zip(args, ARG_REGS):
@@ -835,7 +857,9 @@ class Compiler:
                         instrs.append(Callq('input_int', 0))
                         instrs.append(Instr('movq', [Reg('rax'), Variable(var)]))
 
-                    case Call(func=Name(id=f), args=args): #stmts para funcs definidas 
+                    #chama e copia o resultado de rax para a variavel
+                    #stmts para funcs definidas
+                    case Call(func=Name(id=f), args=args):  
 
                         instrs.extend(self.select_call(f, args))
                         instrs.append(Instr('movq', [Reg('rax'), Variable(var)]))
@@ -1010,19 +1034,24 @@ class Compiler:
 
             case Expr(value=Call(func=Name(id=f), args=args)):
 
+                # call solto ignora assign 
+
                 instrs.extend(self.select_call(f, args))
 
 
         return instrs
 
-
+    # o select agora devolve uma lista de funcoes
+    # ...-> X86Program para ... -> list[x86Def]
     def select_instructions(self, p: CFunProgram) -> list[X86Def]:
+
+        # um X86Def por funcao
 
         result = []
 
         for fun in p.defs:
 
-            self.current_fn = fun.name
+            self.current_fn = fun.name # diz pra onde pular
 
             blocks = {}
 
@@ -1040,6 +1069,8 @@ class Compiler:
 
             for p, r in zip(fun.params, ARG_REGS):
 
+                # copia os parametros dos registradores no inicio do f_start
+
                 params.append(Instr('movq', [Reg(r), Variable(p)]))
 
             start = f'{fun.name}_start'
@@ -1055,6 +1086,8 @@ class Compiler:
         W = set()
         R = set()
 
+        # le os registradores de argumento usados
+        # reseta todos os caller saved
         if isinstance(i, Callq):
 
             R |= set([Reg('rdi'), Reg('rsi'), Reg('rdx'), Reg('rcx'), Reg('r8'), Reg('r9')][:i.num_args])
@@ -1130,7 +1163,8 @@ class Compiler:
 
                 if i.instr == 'movzbq':
 
-                    # a origem é %al: ignora-se, só conta o destino
+                    # a origem é %al: ignora
+                    # só conta o destino
                     if isinstance(d, Variable) or isinstance(d, Reg):
 
                         W.add(d)
@@ -1694,27 +1728,36 @@ class Compiler:
         conclusion.append(Instr('popq', [Reg('rbp')]))
         conclusion.append(Instr('retq', []))
 
-        blocks = {name: prelude}
+        blocks = {name: prelude} # bloco: o prólogo
 
-        blocks.update(p.body)
+        blocks.update(p.body) # os blocos do corpo
 
-        blocks[f'{name}_conclusion'] = conclusion
+        blocks[f'{name}_conclusion'] = conclusion # saida
 
         return blocks
 
 
     def backend(self, defs: list[X86Def], flag: int) -> X86Program:
 
+        # roda liveness, alocacao, patch e prologo separado para cada funcao
+
         all_blocks = {}
 
         for d in defs:
 
+            # os blocos da funcao
             p = X86Program(d.blocks)
 
+            # liveness: o que esta vivo depois de cada instrucao 
             p = self.uncover_live(p)
+
+            #grafo e cores
             p = self.allocate_registers(p, flag)
+
+            # conserta instrucoes invalidas no x86 (mem, mem), usando rax
             p = self.patch_instructions(p)
 
+            # prologo + conclusao e adiciona dic geral
             all_blocks.update(self.prelude_and_conclusion(p, d.name))
 
         return X86Program(all_blocks, entries=frozenset(d.name for d in defs))
